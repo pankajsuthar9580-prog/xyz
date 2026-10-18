@@ -1,0 +1,146 @@
+# ==============================================================================
+# AWS Self-Healing Server Monitor Configuration
+# ==============================================================================
+# Practical, tiered self-healing monitor for AWS EC2 instances
+# Evaluates network, service, container, and host metrics, then triggers
+# automated multi-stage recovery with exponential backoff and rate limits.
+# ==============================================================================
+
+app:
+  name: "aws-self-healing-monitor"
+  environment: "production" # "production" | "staging" | "test"
+  check_interval_seconds: 15
+  dry_run: false # Set true to log actions without executing Docker/Host/AWS mutations
+  http_status_api_port: 8080 # Exposes /health, /status, /history (set 0 to disable)
+
+# ------------------------------------------------------------------------------
+# Safeguards & Throttling (Prevents flapping and reboot loops)
+# ------------------------------------------------------------------------------
+safeguards:
+  consecutive_failures_threshold: 3 # Failures before initiating recovery actions
+  cooldown_period_seconds: 180 # Wait time between recovery attempts for a target
+  max_recoveries_per_hour: 5 # Lockout limit to prevent infinite restart storms
+  exponential_backoff_base_seconds: 5
+  exponential_backoff_multiplier: 2.0
+  max_backoff_seconds: 60
+
+# ------------------------------------------------------------------------------
+# Health Checks Definitions
+# ------------------------------------------------------------------------------
+checks:
+  # HTTP endpoint availability and latency checks
+  http:
+    - name: "sample-nginx-web"
+      url: "http://localhost:80"
+      expected_status_codes: [200, 301, 302]
+      timeout_seconds: 3.5
+      max_response_time_ms: 1500
+      enabled: true
+      target_container: "sample-nginx"
+
+    - name: "internal-api-check"
+      url: "http://localhost:80/healthz"
+      expected_status_codes: [200]
+      timeout_seconds: 2.0
+      max_response_time_ms: 800
+      enabled: false
+      target_container: "api-backend"
+
+  # TCP port connectivity checks
+  tcp:
+    - name: "nginx-port-80"
+      host: "127.0.0.1"
+      port: 80
+      timeout_seconds: 2.0
+      enabled: true
+      target_container: "sample-nginx"
+
+    - name: "database-tcp"
+      host: "127.0.0.1"
+      port: 5432
+      timeout_seconds: 2.0
+      enabled: false
+      target_container: "postgres-db"
+
+  # Ping and DNS checks
+  networking:
+    ping:
+      enabled: true
+      target_hosts: ["1.1.1.1", "8.8.8.8"]
+      count: 2
+      timeout_seconds: 2.0
+    dns:
+      enabled: true
+      domains: ["aws.amazon.com", "google.com"]
+      nameserver: null # null uses system resolver (/etc/resolv.conf)
+      timeout_seconds: 3.0
+
+  # Docker Container Health and Restart loop detection
+  docker:
+    enabled: true
+    socket_path: "unix://var/run/docker.sock"
+    monitored_containers:
+      - name: "sample-nginx"
+        service_name: "web"
+        compose_project_dir: "/opt/self-healing-monitor"
+        max_acceptable_restarts_per_hour: 10
+        require_running: true
+        check_health_status: true # checks Docker HEALTHCHECK if present
+
+  # System Resource Metrics (psutil)
+  system_metrics:
+    enabled: true
+    thresholds:
+      cpu_percent: 90.0 # Alert if sustained above 90%
+      memory_percent: 92.0 # Alert if memory exceeds 92%
+      disk_percent: 88.0 # Alert if root / disk usage exceeds 88%
+      disk_path: "/"
+
+# ------------------------------------------------------------------------------
+# Tiered Recovery Configuration
+# ------------------------------------------------------------------------------
+recovery:
+  # Tier 1: Soft recovery (restart the single failed container)
+  tier1_container_restart:
+    enabled: true
+    timeout_seconds: 30
+
+  # Tier 2: Stack recovery (docker compose recreate with fresh state)
+  tier2_compose_recreate:
+    enabled: true
+    compose_file: "/opt/self-healing-monitor/docker-compose.yml"
+    pull_latest: false
+    timeout_seconds: 60
+
+  # Tier 3: Host service restart (systemctl restart docker / networking)
+  tier3_host_service_restart:
+    enabled: true
+    services: ["docker.service"]
+    timeout_seconds: 45
+
+  # Tier 4: EC2 Instance Reboot (boto3 reboot_instances) - LAST RESORT
+  tier4_ec2_reboot:
+    enabled: true
+    require_confirmation_attempts: 3 # Must have exhausted tiers 1-3
+    drain_delay_seconds: 10 # Grace period before issuing EC2 RebootInstances
+
+# ------------------------------------------------------------------------------
+# AWS Integration: Alerts & Logs
+# ------------------------------------------------------------------------------
+aws:
+  region: "us-east-1" # Can be overridden by AWS_DEFAULT_REGION or IMDSv2
+  sns:
+    enabled: true
+    topic_arn: "arn:aws:sns:us-east-1:123456789012:self-healing-server-alerts"
+    events_to_notify:
+      - "FAILURE_DETECTED"
+      - "RECOVERY_ATTEMPTED"
+      - "RECOVERY_SUCCEEDED"
+      - "RECOVERY_FAILED"
+      - "ESCALATION"
+      - "SAFEGUARD_LOCKOUT"
+      - "HOST_REBOOT_TRIGGERED"
+  cloudwatch:
+    enabled: true
+    log_group: "/aws/ec2/self-healing-monitor"
+    log_stream_prefix: "instance" # Will append ec2_instance_id if detected

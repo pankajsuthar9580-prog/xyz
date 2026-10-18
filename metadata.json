@@ -1,0 +1,6 @@
+{
+  "name": "AWS Self-Healing Server Monitor & Recovery System",
+  "description": "Production-grade automated server recovery monitor for AWS EC2, featuring 4-tiered recovery logic, Docker supervision, CloudWatch structured logging, SNS alerting, and interactive chaos simulation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

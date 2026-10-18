@@ -1,0 +1,40 @@
+[Unit]
+Description=AWS Self-Healing Server Monitor & Recovery Daemon
+After=network.target docker.service
+Requires=docker.service
+Documentation=https://github.com/your-org/aws-self-healing-monitor
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/self-healing-monitor
+
+# Environment variables (AWS region, SNS Topic ARN, Log Group)
+EnvironmentFile=-/etc/default/self-healing-monitor
+Environment=PYTHONUNBUFFERED=1
+Environment=MONITOR_CONFIG_PATH=/opt/self-healing-monitor/config/config.yaml
+
+# Execution command (runs via host virtualenv or python3)
+ExecStart=/usr/bin/python3 /opt/self-healing-monitor/main.py --config /opt/self-healing-monitor/config/config.yaml
+
+# Supervision and restart safeguards
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Process resource governance (t3.micro friendly)
+CPUQuota=25%
+MemoryLimit=128M
+
+# Logging to systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=self-healing-monitor
+
+# Clean termination signals
+KillMode=mixed
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=multi-user.target
